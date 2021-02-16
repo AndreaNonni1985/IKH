@@ -25,7 +25,7 @@ namespace cAlgo.Robots
         public bool TrailingStopOnOpen;
         public bool TrailingStopOnFirstTP;
         public bool TrailingStopOnPipsGain;
-        
+        public bool TrailingStopOnOpenToBreakEven;
         public Setup() {
         }
     }
@@ -38,6 +38,7 @@ namespace cAlgo.Robots
         public double TP2;
         public bool TP1Striked;
         public bool TP2Striked;
+        public bool BreakEven;
         public double SL;
         public double Volume;
         public string Signal;
@@ -58,6 +59,18 @@ namespace cAlgo.Robots
                 }
             }
         }
+        public double PositionStopLossPrice {
+            get {
+                switch (PositionList.Count) {
+                    case 1:
+                        return PositionList[0].StopLoss.Value;
+                    case 0:
+                        return 0;
+                    default:
+                        return 0;
+                }
+            }
+        }
         public Trade(IKH Robot)
         {
             Robot.Positions.Closed += OnClosePosition;
@@ -67,7 +80,10 @@ namespace cAlgo.Robots
         }
         public bool OpenMarket(IKH Robot)
         {
-            TradeResult Result = Robot.ExecuteMarketOrder(Type, Robot.Symbol.Name, Volume, Signal, SL, null, Globals.Strategy);
+            TradeResult Result = Robot.ExecuteMarketOrder(Type, Robot.Symbol.Name, Volume, Signal, SL, null, Globals.Strategy,(Setup.TrailingStopOnOpen || Setup.TrailingStopOnOpenToBreakEven));
+            //if () {
+            //    Result.Position.ModifyTrailingStop(true);
+            //}
             if (Result.IsSuccessful)
             {
                 PositionList.Add(Result.Position);
@@ -86,6 +102,7 @@ namespace cAlgo.Robots
             foreach(Position x in PositionList) {
                 x.ModifyStopLossPips(pips);
             }
+            BreakEven = true;
         }
         public void SetTrailingStop(bool activate) {
             foreach (Position x in PositionList) {
@@ -119,6 +136,10 @@ namespace cAlgo.Robots
         public double BEPips { get; set; }
         [Parameter("Volume", Group = "Parametri Strategia", DefaultValue = 10000, MinValue = 0.1)]
         public double Volume { get; set; }
+        [Parameter("Buy", Group = "Parametri Strategia", DefaultValue = true)]
+        public bool Buy { get; set; }
+        [Parameter("Sell", Group = "Parametri Strategia", DefaultValue = true)]
+        public bool Sell { get; set; }
         [Parameter("Tenkan Sen", Group = "Periodi Ichimoku", DefaultValue = 9, MinValue = 2)]
         public int Tenkan { get; set; }
         [Parameter("Kijun Sen", Group = "Periodi Ichimoku", DefaultValue = 26, MinValue = 2)]
@@ -161,6 +182,15 @@ namespace cAlgo.Robots
                 if (x.Setup.PartialClosureOnFirstTP && TP1Striked) {
                     x.ClosePartialPosition();
                 }
+                if (!x.BreakEven && x.Setup.TrailingStopOnOpenToBreakEven ) {
+                    if (x.Type == TradeType.Buy && x.PositionStopLossPrice >= PricePlusPips(x.PositionEntryPrice, BEPips)) {
+                        x.SetTrailingStop(false);
+                        x.BreakEven = true;
+                    } else if (x.Type == TradeType.Sell && x.PositionStopLossPrice <= PricePlusPips(x.PositionEntryPrice, BEPips * -1)) {
+                        x.SetTrailingStop(false);
+                        x.BreakEven = true;
+                    }
+                }
             }
         }
         protected override void OnBar()
@@ -174,9 +204,9 @@ namespace cAlgo.Robots
             //prezzo di StopLoss
             double SLPrice;
             //prezzo del livello senkou Span A
-            double SPA = IKHIndicator.SenkouSpanA.Last(Kijun + 1);
+            double SPA = IKHIndicator.SenkouSpanA.Last(26 + 1);
             //prezzo del livello senkou Span B
-            double SPB = IKHIndicator.SenkouSpanB.Last(Kijun + 1);
+            double SPB = IKHIndicator.SenkouSpanB.Last(26 + 1);
             //prezzo di chiusura barra corrente
             double Close = Bars.Last(1).Close;
             //variabili temporanee
@@ -206,9 +236,11 @@ namespace cAlgo.Robots
                     x.Close();
                 }
                 // se non ho già il LONG aperto per questo segnale allora apro il LONG
-                if (!TradeList.Exists(e => e.Signal == Globals.SignalSSBSR && e.Type == TradeType.Buy && e.PositionCount > 0))
+                if (Buy && !TradeList.Exists(e => e.Signal == Globals.SignalSSBSR && e.Type == TradeType.Buy && e.PositionCount > 0))
                 {
-                    SLPrice = SPA - (Symbol.Spread * 2);
+                    ;
+                    //SLPrice = SPA - (Symbol.Spread * 2);
+                    SLPrice = IKHIndicator.SenkouSpanA.Minimum(26 * 2) - (Symbol.Spread * 2);
                     TP1Price = Close + Math.Abs(Symbol.Bid - SLPrice);
                     tmpSL = Math.Max(DistanceInPips(SLPrice), MinSL);
                     tmpTP1 = DistanceInPips(TP1Price);
@@ -219,10 +251,10 @@ namespace cAlgo.Robots
                         TP1 = tmpTP1,
                         Signal = Globals.SignalSSBSR,
                         Setup = new Setup() {
+                            TrailingStopOnOpenToBreakEven= true,
+                            PartialClosureOnFirstTP = true,
+                            PartialClosurePerc = 0.5,
                             BreakEvenOnFirstTP = true
-                            ,TrailingStopOnFirstTP = true
-                            ,PartialClosureOnFirstTP = true
-                            ,PartialClosurePerc = 0.5
                         }
                     };
                     if (trade.OpenMarket(this))
@@ -247,10 +279,12 @@ namespace cAlgo.Robots
                     x.Close();
                 }
                 // se non ho già lo SHORT aperto per questo segnale allora apro lo SHORT
-                if (!TradeList.Exists(e => e.Signal == Globals.SignalSSBSR && e.Type == TradeType.Sell && e.PositionCount > 0))
+                if (Sell && !TradeList.Exists(e => e.Signal == Globals.SignalSSBSR && e.Type == TradeType.Sell && e.PositionCount > 0))
                 {
-                    SLPrice = SPA + (Symbol.Spread * 2);
+                    //SLPrice = SPA + (Symbol.Spread * 2);
+                    SLPrice = IKHIndicator.SenkouSpanA.Maximum(26 * 2) + (Symbol.Spread * 2);
                     TP1Price = Close - Math.Abs(Symbol.Bid - SLPrice);
+                    
                     tmpSL = Math.Max(DistanceInPips(SLPrice), MinSL);
                     tmpTP1 = DistanceInPips(TP1Price);
                     Trade trade = new Trade(this) 
@@ -261,10 +295,11 @@ namespace cAlgo.Robots
                         TP1 = tmpTP1,
                         Signal = Globals.SignalSSBSR,
                         Setup = new Setup() {
+                            TrailingStopOnOpenToBreakEven=true,
+                            PartialClosureOnFirstTP=true,
+                            PartialClosurePerc=0.5,
                             BreakEvenOnFirstTP = true
-                            ,TrailingStopOnFirstTP = true
-                            ,PartialClosureOnFirstTP=true
-                            ,PartialClosurePerc = 0.5
+
                         }
                     };
 
